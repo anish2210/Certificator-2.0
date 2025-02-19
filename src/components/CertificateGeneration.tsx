@@ -37,18 +37,14 @@ const CertificateGeneration: React.FC<Props> = ({
       });
       setPreviewCanvas(canvas);
     }
-
-    return () => {
-      if (previewCanvas) {
-        previewCanvas.dispose();
-      }
-    };
   }, []);
 
-  // Update preview when index changes
+  // Update preview when canvas is set or when index/template/fields change
   useEffect(() => {
-    updatePreview();
-  }, [previewIndex, template, mappedFields]);
+    if (previewCanvas) {
+      updatePreview();
+    }
+  }, [previewCanvas, previewIndex, template, mappedFields]);
 
   const updatePreview = async () => {
     if (!previewCanvas) return;
@@ -58,6 +54,8 @@ const CertificateGeneration: React.FC<Props> = ({
 
     // Load template image
     fabric.Image.fromURL(template, (img) => {
+      if (!img) return;
+
       const canvasWidth = previewCanvas.width ?? 800;
       const canvasHeight = previewCanvas.height ?? 600;
       const imgWidth = img.width ?? 0;
