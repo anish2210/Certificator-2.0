@@ -1,179 +1,198 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { fabric } from 'fabric';
 import { SheetData, MappedField } from '../types';
 
 interface Props {
   sheetData: SheetData;
   template: string;
-  onFieldsMapped: (fields: MappedField[]) => void;
+  onFieldsMapped: (mappedFields: MappedField[]) => void;
   onBack: () => void;
 }
 
-const FieldMapping: React.FC<Props> = ({
-  sheetData,
-  template,
-  onFieldsMapped,
-  onBack,
-}) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [canvas, setCanvas] = useState<fabric.Canvas | null>(null);
+const FieldMapping: React.FC<Props> = ({ sheetData, template, onFieldsMapped, onBack }) => {
   const [mappedFields, setMappedFields] = useState<MappedField[]>([]);
-  const dragItemRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
 
+  // Initialize canvas when component mounts
   useEffect(() => {
-    if (canvasRef.current && !canvas) {
-      // Initialize canvas with basic settings
-      const fabricCanvas = new fabric.Canvas(canvasRef.current, {
-        width: 800,
-        height: 600,
-        selection: true,
-        preserveObjectStacking: true,
-      });
-
-      // Load template image
-      fabric.Image.fromURL(template, (img) => {
-        // Calculate dimensions to maintain aspect ratio
-        const imgWidth = img.width ?? 0;
-        const imgHeight = img.height ?? 0;
-        const canvasWidth = fabricCanvas.width ?? 800;
-        const canvasHeight = fabricCanvas.height ?? 600;
-
-        // Calculate aspect ratios
-        const imgAspectRatio = imgWidth / imgHeight;
-        const canvasAspectRatio = canvasWidth / canvasHeight;
-
-        let scaleX, scaleY, left = 0, top = 0;
-
-        if (imgAspectRatio > canvasAspectRatio) {
-          // Image is wider than canvas (relative to height)
-          scaleX = canvasWidth / imgWidth;
-          scaleY = scaleX;
-          top = (canvasHeight - (imgHeight * scaleY)) / 2;
-        } else {
-          // Image is taller than canvas (relative to width)
-          scaleY = canvasHeight / imgHeight;
-          scaleX = scaleY;
-          left = (canvasWidth - (imgWidth * scaleX)) / 2;
-        }
-
-        // Set image properties
-        img.set({
-          scaleX: scaleX,
-          scaleY: scaleY,
-          left: left,
-          top: top,
-          originX: 'left',
-          originY: 'top',
+    const initCanvas = async () => {
+      if (canvasRef.current && !fabricCanvasRef.current) {
+        // Create fabric canvas
+        const canvas = new fabric.Canvas(canvasRef.current, {
+          width: 800,
+          height: 600,
+          backgroundColor: 'white',
+          preserveObjectStacking: true
         });
 
-        // Set as background
-        fabricCanvas.setBackgroundImage(img, fabricCanvas.renderAll.bind(fabricCanvas));
+        fabricCanvasRef.current = canvas;
 
-        // Adjust canvas container size to match image aspect ratio
-        const container = canvasRef.current?.parentElement;
-        if (container) {
-          container.style.width = '100%';
-          container.style.height = '600px';
-          container.style.display = 'flex';
-          container.style.alignItems = 'center';
-          container.style.justifyContent = 'center';
-        }
-      });
-
-      // Update object on modification
-      fabricCanvas.on('object:modified', (e) => {
-        const obj = e.target as fabric.IText;
-        if (obj && obj.text) {
-          const fieldIndex = mappedFields.findIndex(
-            (field) => field.sheetColumn === obj.text
-          );
-          if (fieldIndex !== -1) {
-            const updatedFields = [...mappedFields];
-            updatedFields[fieldIndex] = {
-              ...updatedFields[fieldIndex],
-              position: { x: obj.left ?? 0, y: obj.top ?? 0 },
-              style: {
-                fontSize: obj.fontSize ?? 20,
-                fontFamily: obj.fontFamily ?? 'Arial',
-                color: obj.fill?.toString() ?? '#000000',
+        // Load template image
+        try {
+          const img = await new Promise<fabric.Image>((resolve, reject) => {
+            fabric.Image.fromURL(
+              template,
+              (img) => {
+                if (!img) {
+                  reject(new Error('Failed to load image'));
+                  return;
+                }
+                resolve(img);
               },
-            };
-            setMappedFields(updatedFields);
-          }
+              { crossOrigin: 'anonymous' }
+            );
+          });
+
+          // Calculate dimensions
+          const canvasWidth = canvas.width ?? 800;
+          const canvasHeight = canvas.height ?? 600;
+          const imgWidth = img.width ?? 0;
+          const imgHeight = img.height ?? 0;
+
+          // Calculate scaling to fit canvas while maintaining aspect ratio
+          const scaleX = canvasWidth / imgWidth;
+          const scaleY = canvasHeight / imgHeight;
+          const scale = Math.min(scaleX, scaleY);
+
+          // Center the image
+          const left = (canvasWidth - imgWidth * scale) / 2;
+          const top = (canvasHeight - imgHeight * scale) / 2;
+
+          img.set({
+            scaleX: scale,
+            scaleY: scale,
+            left,
+            top,
+            selectable: false,
+            evented: false
+          });
+
+          // Set background and render
+          canvas.setBackgroundImage(img, () => {
+            canvas.renderAll();
+          });
+
+          // Handle object modifications
+          canvas.on('object:modified', (e) => {
+            const target = e.target as fabric.Text;
+            if (!target) return;
+
+            const header = target.get('data')?.header;
+            if (!header) return;
+
+            const fieldIndex = mappedFields.findIndex(
+              (field) => field.sheetColumn === header
+            );
+
+            if (fieldIndex !== -1) {
+              const updatedFields = [...mappedFields];
+              updatedFields[fieldIndex] = {
+                ...updatedFields[fieldIndex],
+                position: {
+                  x: Math.round(target.left ?? 0),
+                  y: Math.round(target.top ?? 0)
+                },
+                style: {
+                  fontSize: Math.round(target.getFontSize() ?? 20),
+                  fontFamily: target.getFontFamily() ?? 'Arial',
+                  color: target.getFill()?.toString() ?? '#000000'
+                }
+              };
+              setMappedFields(updatedFields);
+            }
+          });
+        } catch (error) {
+          console.error('Error loading template:', error);
         }
-      });
-
-      setCanvas(fabricCanvas);
-    }
-  }, [template]);
-
-  const createText = (text: string, left: number, top: number) => {
-    return new fabric.IText(text, {
-      left,
-      top,
-      fontSize: 20,
-      fill: '#000000',
-      fontFamily: 'Arial',
-      hasControls: true,
-      hasBorders: true,
-      selectable: true,
-      editable: true,
-      centeredScaling: true,
-      borderColor: '#2196F3',
-      cornerColor: '#2196F3',
-      cornerSize: 12,
-      transparentCorners: false,
-      padding: 10,
-    });
-  };
-
-  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, column: string) => {
-    e.dataTransfer.setData('text/plain', column);
-    if (dragItemRef.current) {
-      dragItemRef.current.style.opacity = '0.5';
-    }
-  };
-
-  const handleDragEnd = () => {
-    if (dragItemRef.current) {
-      dragItemRef.current.style.opacity = '1';
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const column = e.dataTransfer.getData('text/plain');
-    if (!canvas || !column) return;
-
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const text = createText(column, x, y);
-    canvas.add(text);
-    canvas.setActiveObject(text);
-    canvas.requestRenderAll();
-
-    const newField: MappedField = {
-      id: Date.now().toString(),
-      sheetColumn: column,
-      position: { x, y },
-      style: {
-        fontSize: 20,
-        fontFamily: 'Arial',
-        color: '#000000',
-      },
+      }
     };
 
-    setMappedFields([...mappedFields, newField]);
+    initCanvas();
+
+    return () => {
+      if (fabricCanvasRef.current) {
+        fabricCanvasRef.current.dispose();
+        fabricCanvasRef.current = null;
+      }
+    };
+  }, [template]);
+
+  const handleDragStart = (e: React.DragEvent<HTMLDivElement>, header: string) => {
+    e.dataTransfer.setData('text/plain', header);
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
   };
 
-  const handleSave = () => {
-    onFieldsMapped(mappedFields);
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const header = e.dataTransfer.getData('text/plain');
+    
+    if (!fabricCanvasRef.current || !canvasRef.current) return;
+
+    const canvas = fabricCanvasRef.current;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const pointer = canvas.getPointer(e);
+
+    // Remove existing field if it exists
+    const existingFieldIndex = mappedFields.findIndex(
+      (field) => field.sheetColumn === header
+    );
+
+    if (existingFieldIndex !== -1) {
+      const existingObjects = canvas.getObjects();
+      const existingText = existingObjects.find(
+        (obj) => obj.get('data')?.header === header
+      );
+      if (existingText) {
+        canvas.remove(existingText);
+      }
+    }
+
+    // Create new text object
+    const text = new fabric.Text(header, {
+      left: pointer.x,
+      top: pointer.y,
+      fontSize: 20,
+      fontFamily: 'Arial',
+      fill: '#000000',
+      data: { header },
+      hasControls: true,
+      hasBorders: true,
+      lockRotation: true,
+      cornerSize: 8,
+      transparentCorners: false,
+      borderColor: '#2196F3',
+      cornerColor: '#2196F3'
+    });
+
+    canvas.add(text);
+    canvas.setActiveObject(text);
+    canvas.renderAll();
+
+    // Update mapped fields
+    const newField: MappedField = {
+      sheetColumn: header,
+      position: {
+        x: Math.round(pointer.x),
+        y: Math.round(pointer.y)
+      },
+      style: {
+        fontSize: 20,
+        fontFamily: 'Arial',
+        color: '#000000'
+      }
+    };
+
+    if (existingFieldIndex !== -1) {
+      const updatedFields = [...mappedFields];
+      updatedFields[existingFieldIndex] = newField;
+      setMappedFields(updatedFields);
+    } else {
+      setMappedFields([...mappedFields, newField]);
+    }
   };
 
   return (
@@ -181,39 +200,39 @@ const FieldMapping: React.FC<Props> = ({
       <div>
         <h2 className="text-2xl font-bold mb-4">Step 3: Map Fields</h2>
         <p className="text-gray-600 mb-4">
-          Drag and drop fields from the list onto the template to place them.
-          You can move, resize, and rotate fields after placing them.
+          Drag and drop fields onto the template. You can resize and move fields after placing them.
         </p>
       </div>
 
       <div className="flex space-x-6">
-        <div className="w-64">
-          <div className="p-4 border border-gray-200 rounded-lg bg-white">
-            <h3 className="font-semibold mb-3">Available Fields</h3>
-            <div className="space-y-2">
-              {sheetData.headers.map((header) => (
-                <div
-                  key={header}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, header)}
-                  onDragEnd={handleDragEnd}
-                  ref={dragItemRef}
-                  className="p-2 bg-gray-100 rounded cursor-move hover:bg-gray-200 transition-colors"
-                >
-                  {header}
-                </div>
-              ))}
-            </div>
+        <div className="w-1/4">
+          <h3 className="text-lg font-semibold mb-4">Available Fields</h3>
+          <div className="space-y-2">
+            {sheetData.headers.map((header) => (
+              <div
+                key={header}
+                draggable
+                onDragStart={(e) => handleDragStart(e, header)}
+                className={`p-2 border rounded cursor-move hover:bg-gray-50 ${
+                  mappedFields.some((field) => field.sheetColumn === header)
+                    ? 'bg-blue-50 border-blue-200'
+                    : 'bg-white'
+                }`}
+              >
+                {header}
+              </div>
+            ))}
           </div>
         </div>
 
-        <div
-          className="flex-1 border border-gray-300 rounded-lg overflow-hidden"
-          style={{ minHeight: '600px', position: 'relative' }}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-        >
-          <canvas ref={canvasRef} />
+        <div className="w-3/4">
+          <div 
+            className="border rounded-lg p-4 bg-white"
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            <canvas ref={canvasRef} style={{ width: '100%', height: '600px' }} />
+          </div>
         </div>
       </div>
 
@@ -225,11 +244,11 @@ const FieldMapping: React.FC<Props> = ({
           Back
         </button>
         <button
-          onClick={handleSave}
+          onClick={() => onFieldsMapped(mappedFields)}
           disabled={mappedFields.length === 0}
-          className="bg-blue-500 text-white px-6 py-2 rounded-md hover:bg-blue-600 disabled:bg-blue-300"
+          className="bg-blue-500 text-white px-6 py-2 rounded-md hover:bg-blue-600 disabled:opacity-50"
         >
-          Save and Continue
+          Next
         </button>
       </div>
     </div>

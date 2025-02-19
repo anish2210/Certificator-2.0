@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { SheetData, MappedField } from '../types';
 import JSZip from 'jszip';
+import { fabric } from 'fabric';
+import { PDFDocument } from 'pdf-lib';
 
 type FileType = 'png' | 'jpg' | 'pdf';
 
@@ -21,6 +23,196 @@ const CertificateGeneration: React.FC<Props> = ({
   const [progress, setProgress] = useState(0);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [fileType, setFileType] = useState<FileType>('pdf');
+  const [previewCanvas, setPreviewCanvas] = useState<fabric.Canvas | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Initialize preview canvas when component mounts
+  useEffect(() => {
+    if (previewCanvasRef.current && !previewCanvas) {
+      const canvas = new fabric.Canvas(previewCanvasRef.current, {
+        width: 800,
+        height: 600,
+        backgroundColor: 'white',
+        selection: false
+      });
+      setPreviewCanvas(canvas);
+    }
+
+    return () => {
+      if (previewCanvas) {
+        previewCanvas.dispose();
+      }
+    };
+  }, []);
+
+  // Update preview when index changes
+  useEffect(() => {
+    updatePreview();
+  }, [previewIndex, template, mappedFields]);
+
+  const updatePreview = async () => {
+    if (!previewCanvas) return;
+
+    // Clear canvas
+    previewCanvas.clear();
+
+    // Load template image
+    fabric.Image.fromURL(template, (img) => {
+      const canvasWidth = previewCanvas.width ?? 800;
+      const canvasHeight = previewCanvas.height ?? 600;
+      const imgWidth = img.width ?? 0;
+      const imgHeight = img.height ?? 0;
+
+      // Calculate scaling
+      const scaleX = canvasWidth / imgWidth;
+      const scaleY = canvasHeight / imgHeight;
+      const scale = Math.min(scaleX, scaleY);
+
+      // Center the image
+      const left = (canvasWidth - imgWidth * scale) / 2;
+      const top = (canvasHeight - imgHeight * scale) / 2;
+
+      img.set({
+        scaleX: scale,
+        scaleY: scale,
+        left,
+        top,
+        selectable: false
+      });
+
+      previewCanvas.setBackgroundImage(img, () => {
+        // Add mapped fields
+        const rowData = sheetData.rows[previewIndex];
+        mappedFields.forEach((field) => {
+          const columnIndex = sheetData.headers.indexOf(field.sheetColumn);
+          if (columnIndex !== -1) {
+            const text = new fabric.Text(rowData[columnIndex], {
+              left: field.position.x,
+              top: field.position.y,
+              fontSize: field.style.fontSize,
+              fontFamily: field.style.fontFamily,
+              fill: field.style.color,
+              selectable: false
+            });
+            previewCanvas.add(text);
+          }
+        });
+        previewCanvas.renderAll();
+      });
+    });
+  };
+
+  const generateCertificate = async (
+    templateUrl: string,
+    rowData: string[],
+    fields: MappedField[],
+    outputType: FileType
+  ): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      try {
+        // Create a temporary canvas element
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 800;
+        tempCanvas.height = 600;
+
+        // Create fabric canvas
+        const fabricCanvas = new fabric.Canvas(tempCanvas);
+        fabricCanvas.backgroundColor = 'white';
+
+        // Load template image
+        fabric.Image.fromURL(templateUrl, (img) => {
+          if (!img) {
+            reject(new Error('Failed to load template image'));
+            return;
+          }
+
+          const canvasWidth = fabricCanvas.width ?? 800;
+          const canvasHeight = fabricCanvas.height ?? 600;
+          const imgWidth = img.width ?? 0;
+          const imgHeight = img.height ?? 0;
+
+          // Calculate scaling
+          const scaleX = canvasWidth / imgWidth;
+          const scaleY = canvasHeight / imgHeight;
+          const scale = Math.min(scaleX, scaleY);
+
+          // Center the image
+          const left = (canvasWidth - imgWidth * scale) / 2;
+          const top = (canvasHeight - imgHeight * scale) / 2;
+
+          img.set({
+            scaleX: scale,
+            scaleY: scale,
+            left,
+            top,
+            selectable: false
+          });
+
+          fabricCanvas.setBackgroundImage(img, async () => {
+            try {
+              // Add text fields
+              fields.forEach((field) => {
+                const columnIndex = sheetData.headers.indexOf(field.sheetColumn);
+                if (columnIndex !== -1) {
+                  const text = new fabric.Text(rowData[columnIndex], {
+                    left: field.position.x,
+                    top: field.position.y,
+                    fontSize: field.style.fontSize,
+                    fontFamily: field.style.fontFamily,
+                    fill: field.style.color,
+                    selectable: false
+                  });
+                  fabricCanvas.add(text);
+                }
+              });
+
+              fabricCanvas.renderAll();
+
+              if (outputType === 'pdf') {
+                const dataUrl = fabricCanvas.toDataURL({
+                  format: 'png',
+                  quality: 1
+                });
+
+                const pdfDoc = await PDFDocument.create();
+                const page = pdfDoc.addPage([canvasWidth, canvasHeight]);
+                
+                const base64Data = dataUrl.split(',')[1];
+                const imageBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+                const image = await pdfDoc.embedPng(imageBytes);
+                
+                page.drawImage(image, {
+                  x: 0,
+                  y: 0,
+                  width: page.getWidth(),
+                  height: page.getHeight()
+                });
+
+                const pdfBytes = await pdfDoc.save();
+                resolve(new Blob([pdfBytes], { type: 'application/pdf' }));
+              } else {
+                fabricCanvas.toBlob((blob) => {
+                  if (blob) {
+                    resolve(blob);
+                  } else {
+                    reject(new Error('Failed to create image blob'));
+                  }
+                }, `image/${outputType === 'jpg' ? 'jpeg' : outputType}`);
+              }
+            } catch (error) {
+              reject(error);
+            } finally {
+              fabricCanvas.dispose();
+            }
+          });
+        }, (error) => {
+          reject(new Error(`Failed to load template image: ${error}`));
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  };
 
   const generateCertificates = async () => {
     setGenerating(true);
@@ -32,47 +224,32 @@ const CertificateGeneration: React.FC<Props> = ({
 
       for (let i = 0; i < total; i++) {
         const row = sheetData.rows[i];
-        // TODO: Implement actual certificate generation using canvas/PDF-lib
-        // This is a mock implementation
-        const certificateBlob = await mockGenerateCertificate(template, row, mappedFields, fileType);
+        const certificateBlob = await generateCertificate(template, row, mappedFields, fileType);
         const fileName = `certificate_${i + 1}.${fileType}`;
         zip.file(fileName, certificateBlob);
-
         setProgress(((i + 1) / total) * 100);
       }
 
-      const content = await zip.generateAsync({ type: 'blob' });
+      const content = await zip.generateAsync({
+        type: 'blob',
+        compression: 'DEFLATE',
+        compressionOptions: {
+          level: 6
+        }
+      });
+
       const url = window.URL.createObjectURL(content);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `certificates.zip`;
+      a.download = 'certificates.zip';
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error generating certificates:', error);
-      alert('Failed to generate certificates. Please try again.');
+      alert(`Failed to generate certificates: ${error.message}`);
     } finally {
       setGenerating(false);
     }
-  };
-
-  // Mock function to simulate certificate generation
-  const mockGenerateCertificate = async (
-    template: string,
-    rowData: string[],
-    fields: MappedField[],
-    outputType: FileType
-  ): Promise<Blob> => {
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        // In a real implementation, this would create an actual certificate
-        // using canvas or PDF-lib in the specified format
-        const mockBlob = new Blob(['mock certificate data'], {
-          type: outputType === 'pdf' ? 'application/pdf' : `image/${outputType}`,
-        });
-        resolve(mockBlob);
-      }, 100);
-    });
   };
 
   return (
@@ -107,15 +284,16 @@ const CertificateGeneration: React.FC<Props> = ({
             Next
           </button>
         </div>
-        <div className="border rounded-lg p-4 bg-gray-50">
-          <div className="space-y-2">
-            {sheetData.headers.map((header, index) => (
-              <div key={header} className="flex">
-                <span className="font-semibold w-32">{header}:</span>
-                <span>{sheetData.rows[previewIndex][index]}</span>
-              </div>
-            ))}
-          </div>
+        <div className="border rounded-lg p-4 mb-4 bg-white flex justify-center">
+          <canvas ref={previewCanvasRef} className="max-w-full" />
+        </div>
+        <div className="space-y-2">
+          {sheetData.headers.map((header, index) => (
+            <div key={header} className="flex">
+              <span className="font-semibold w-32">{header}:</span>
+              <span>{sheetData.rows[previewIndex][index]}</span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -179,7 +357,7 @@ const CertificateGeneration: React.FC<Props> = ({
         </div>
       )}
 
-      <div className="flex space-x-4">
+      <div className="flex justify-between">
         <button
           onClick={onBack}
           disabled={generating}
