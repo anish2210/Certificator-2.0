@@ -167,19 +167,14 @@ const CertificateGeneration: React.FC<Props> = ({
               fabricCanvas.renderAll();
 
               if (outputType === 'pdf') {
-                const dataUrl = fabricCanvas.toDataURL({
-                  format: 'png',
-                  quality: 1
-                });
-
                 const pdfDoc = await PDFDocument.create();
                 const page = pdfDoc.addPage([canvasWidth, canvasHeight]);
                 
-                const base64Data = dataUrl.split(',')[1];
-                const imageBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
-                const image = await pdfDoc.embedPng(imageBytes);
+                // Convert canvas to PNG for PDF
+                const pngData = fabricCanvas.toDataURL('image/png');
+                const pngImage = await pdfDoc.embedPng(pngData);
                 
-                page.drawImage(image, {
+                page.drawImage(pngImage, {
                   x: 0,
                   y: 0,
                   width: page.getWidth(),
@@ -189,13 +184,21 @@ const CertificateGeneration: React.FC<Props> = ({
                 const pdfBytes = await pdfDoc.save();
                 resolve(new Blob([pdfBytes], { type: 'application/pdf' }));
               } else {
-                fabricCanvas.toBlob((blob) => {
-                  if (blob) {
-                    resolve(blob);
-                  } else {
-                    reject(new Error('Failed to create image blob'));
-                  }
-                }, `image/${outputType === 'jpg' ? 'jpeg' : outputType}`);
+                // For PNG/JPG, use the native canvas element
+                const format = outputType === 'png' ? 'image/png' : 'image/jpeg';
+                const nativeCanvas = fabricCanvas.getElement();
+                
+                nativeCanvas.toBlob(
+                  (blob) => {
+                    if (blob) {
+                      resolve(blob);
+                    } else {
+                      reject(new Error('Failed to create image blob'));
+                    }
+                  },
+                  format,
+                  1.0 // Maximum quality
+                );
               }
             } catch (error) {
               reject(error);
@@ -203,8 +206,6 @@ const CertificateGeneration: React.FC<Props> = ({
               fabricCanvas.dispose();
             }
           });
-        }, (error) => {
-          reject(new Error(`Failed to load template image: ${error}`));
         });
       } catch (error) {
         reject(error);
